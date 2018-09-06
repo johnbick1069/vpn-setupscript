@@ -14,9 +14,10 @@ SHADOWSOCKSR=true
 ENABLE_ICMP=true # Server will response to ICMP(ping) request
 SECURE_SSH=true # Will disable root login via ssh, make sure you have another sudo account
 AUTO_UPGRADE=false # auto_upgrade will reboot system based on new updates requirement, recommand false for industry usage
+DISABLE_ROOTLOGIN=false # Disable root login or not
 SSH_PORT=22 # Used to set firewall
 SSH_ACCEPT_IP="192.168.1.0/24
-10.0.0.0/24" # Will only accept ssh request from this range
+10.0.0.0/24" # Will only accept ssh request from these address space
 
 # Settings for STRONGSWAN
 STRONGSWAN_VPN_IPPOOL="10.10.10.0/24"
@@ -232,10 +233,14 @@ if [[ $INSTALL_VPN = true ]]; then
 		info "Enhance System Security(SSH)..."
 		sed -r \
 		-e 's/^#?LoginGraceTime (120|2m)$/LoginGraceTime 30/' \
-		-e 's/^#?PermitRootLogin yes$/PermitRootLogin no/' \
 		-e 's/^#?X11Forwarding yes$/X11Forwarding no/' \
 		-e 's/^#?PermitEmptyPasswords yes$/PermitEmptyPasswords no/' \
 		-i.original /etc/ssh/sshd_config
+
+		if [[ $DISABLE_ROOTLOGIN = true ]]; then
+			sed -e 's/^#?PermitRootLogin yes$/PermitRootLogin no/' -i /etc/ssh/sshd_config
+		fi
+		# use root to login will be easier for adding user: so leave it there
 
 		grep -Fq "MaxStartups 1" /etc/ssh/sshd_config || echo "MaxStartups 1" >> /etc/ssh/sshd_config
 		grep -Fq "MaxAuthTries 2" /etc/ssh/sshd_config || echo "MaxAuthTries 2" >> /etc/ssh/sshd_config
@@ -307,7 +312,9 @@ if [[ $INSTALL_VPN = true ]]; then
 		iptables -t nat -A POSTROUTING -s $STRONGSWAN_VPN_IPPOOL -o $INTERFACE -m policy --pol ipsec --dir out -j ACCEPT # Exempt IPsec traffic from Masquerade
 		iptables -t nat -A POSTROUTING -s $STRONGSWAN_VPN_IPPOOL -o $INTERFACE -m comment --comment "strongswan-postrouting" -j MASQUERADE # Masquerade VPN traffic over interface
 	fi
-	echo $SSH_ACCEPT_IP |tr ' ' '\n' | while read IP_RANGE ; do iptables -A INPUT -s $IP_RANGE -p tcp -m tcp --dport $SSH_PORT -j ACCEPT ; done # Only accept ssh from certain IP rangse
+	if [[ ! $SSH_ACCEPT_IP = "" ]]; then
+		echo $SSH_ACCEPT_IP |tr ' ' '\n' | while read IP_RANGE ; do iptables -A INPUT -s $IP_RANGE -p tcp -m tcp --dport $SSH_PORT -j ACCEPT ; done # Only accept ssh from certain IP rangse
+	fi
 	iptables -A INPUT -p tcp -m tcp --dport $SSH_PORT -j DROP # Close SSH port to void ssh attack
 	if [[ $ENABLE_ICMP = true ]]; then # Enable ICMP based on settings. So we can use ping to test server
 		iptables -A INPUT -d $INTERFACE_IP/32 -p icmp -m icmp --icmp-type 8 -m state --state NEW,RELATED,ESTABLISHED -j ACCEPT 
@@ -904,10 +911,11 @@ EOF
 		fi
 		info "   Done"
 		if [[ ! -f /usr/lib/libsodium.a ]]; then
+			info "Installing libsodium..."
 			decompress ${SCRIPT_DIR}/${Libsodium_filename} ${SCRIPT_DIR}/libsodium_install_temp >> $LOG_DIR 2>&1
 			mkdir -p ${SCRIPT_DIR}/libsodium_install_temp/build >> $LOG_DIR 2>&1
 			cd ${SCRIPT_DIR}/libsodium_install_temp/build
-			../configure --prefix=/usr && make && make install >> $LOG_DIR 2>&1
+			../configure --prefix=/usr >> $LOG_DIR 2>&1 && make >> $LOG_DIR 2>&1 && make install >> $LOG_DIR 2>&1 
 			if [[ $? -ne 0 ]]; then
 				cd ${SCRIPT_DIR}
 				rm -rf ${SCRIPT_DIR}/${Libsodium_filename} ${SCRIPT_DIR}/libsodium_install_temp
@@ -1081,10 +1089,11 @@ EOF
 		fi
 		info "   Done"
 		if [[ ! -f /usr/lib/libsodium.a ]]; then
+			info "Installing libsodium..."
 			decompress ${SCRIPT_DIR}/${Libsodium_filename} ${SCRIPT_DIR}/libsodium_install_temp >> $LOG_DIR 2>&1
 			mkdir -p ${SCRIPT_DIR}/libsodium_install_temp/build
 			cd ${SCRIPT_DIR}/libsodium_install_temp/build
-			../configure --prefix=/usr && make && make install >> $LOG_DIR 2>&1
+			../configure --prefix=/usr >> $LOG_DIR 2>&1 && make >> $LOG_DIR 2>&1 && make install >> $LOG_DIR 2>&1 
 			if [[ $? -ne 0 ]]; then
 				cd ${SCRIPT_DIR}
 				rm -rf ${SCRIPT_DIR}/${Libsodium_filename} ${SCRIPT_DIR}/libsodium_install_temp
@@ -1440,7 +1449,7 @@ EOF
 			# Update general list
 			if [[ -n \$(grep -E "\$1 " \$GENERAL_USER_LIST) ]]; then
 				if [[ ! -n \$(grep "\$1 .* SS_PORT=" \$GENERAL_USER_LIST) ]]; then
-					user_port_number=\$(grep "\$1" $SS_PYTHON_CONFIGFILE | sed "s/.*\"\(.*\)\":.*/\1/")
+					user_port_number=\$(grep ":\"\$1\"" $SS_PYTHON_CONFIGFILE | sed "s/.*\"\(.*\)\":.*/\1/")
 					sed -e "/^\$1 .*/s/\$/ SS_PORT=\$user_port_number/" -i \$GENERAL_USER_LIST
 				fi
 			fi
@@ -1451,13 +1460,13 @@ EOF
 			# Update general list
 			if [[ -n \$(grep -E "\$1 " \$GENERAL_USER_LIST) ]]; then
 				if [[ ! -n \$(grep "\$1 .* SSR_PORT=" \$GENERAL_USER_LIST) ]]; then
-					user_port_number=\$(grep "\$1" $SSR_CONFIGFILE | sed "s/.*\"\(.*\)\":.*/\1/")
+					user_port_number=\$(grep ":\"\$1\"" $SSR_CONFIGFILE | sed "s/.*\"\(.*\)\":.*/\1/")
 					sed -e "/^\$1 .*/s/\$/ SSR_PORT=\$user_port_number/" -i \$GENERAL_USER_LIST
 				fi
 			fi
 		fi
 		restart_vpns
-		grep "\$1" \$GENERAL_USER_LIST 
+		grep "\$1 " \$GENERAL_USER_LIST 
 	}
 	del_user() {
 		# delete user from general list
@@ -1704,7 +1713,9 @@ if [[ $UNINSTALL_VPN = true ]]; then
 		# Shadowoskcs-R firewall Rules
 		iptables -A INPUT -p tcp -m multiport --dports $SSR_PORT_START:$SSR_PORT_END -j ACCEPT
 		iptables -A INPUT -p udp -m multiport --dports $SSR_PORT_START:$SSR_PORT_END -j ACCEPT
-	echo $SSH_ACCEPT_IP |tr ' ' '\n' | while read IP_RANGE ; do iptables -D INPUT -s $IP_RANGE -p tcp -m tcp --dport $SSH_PORT -j ACCEPT >> $LOG_DIR 2>&1 ; done   # Only accept ssh from certain IP rangse
+	if [[ ! $SSH_ACCEPT_IP = "" ]]; then
+		echo $SSH_ACCEPT_IP |tr ' ' '\n' | while read IP_RANGE ; do iptables -D INPUT -s $IP_RANGE -p tcp -m tcp --dport $SSH_PORT -j ACCEPT >> $LOG_DIR 2>&1 ; done   # Only accept ssh from certain IP rangse
+	fi
 	iptables -D INPUT -p tcp -m tcp --dport $SSH_PORT -j DROP  >> $LOG_DIR 2>&1 # Close SSH port to void ssh attack
 	iptables -D INPUT -d $INTERFACE_IP/32 -p icmp -m icmp --icmp-type 8 -m state --state NEW,RELATED,ESTABLISHED -j ACCEPT  >> $LOG_DIR 2>&1 
 	iptables -D OUTPUT -s $INTERFACE_IP/32 -p icmp -m icmp --icmp-type 8 -m state --state NEW,RELATED,ESTABLISHED -j ACCEPT >> $LOG_DIR 2>&1 

@@ -14,7 +14,6 @@ SHADOWSOCKSR=true
 ENABLE_ICMP=true # Server will response to ICMP(ping) request
 SECURE_SSH=true # Will disable root login via ssh, make sure you have another sudo account
 AUTO_UPGRADE=false # auto_upgrade will reboot system based on new updates requirement, recommand false for industry usage
-DISABLE_ROOTLOGIN=false # Disable root login or not
 SSH_PORT=22 # Used to set firewall
 SSH_ACCEPT_IP="192.168.1.0/24
 10.0.0.0/24" # Will only accept ssh request from these address space
@@ -196,8 +195,18 @@ if [[ $INSTALL_VPN = true ]]; then
 	[[ $STRONGSWAN = true ]] || [[ $OPENCONNECT = true ]] || [[ $SHADOWSOCKS = true ]] || [[ $SHADOWSOCKSR = true ]] || exception "No VPN selected"	
 	
 	# Some Basic info for later processing
-	info "** Please input hostname for Let's Encrypt certificate, IP address is not allowed"
-	read -p "Hostname(e.g. vpn.com): " VPN_HOSTNAME
+	info "** Please input hostname for Let's Encrypt certificate"
+	DEFAULT_VPNHOST=${INTERFACE_IP}.sslip.io
+	read -p "Hostname(e.g. vpn.com, default: ${DEAFULT_VPNHOST}): " VPN_HOST
+	IP_REGEX='^((2[0-4][0-9]|25[0-5]|[01]?[0-9][0-9]?)\.){3}(2[0-4][0-9]|25[0-5]|[01]?[0-9][0-9]?)$'
+	if [[ $VPN_HOST =~ $IP_REGEX ]]
+	then
+		# If is IP address given, append sslip.io to it
+		VPN_HOSTNAME=${VPN_HOST}.sslip.io
+	else
+		VPN_HOSTNAME=$VPN_HOST
+	fi
+	VPN_HOSTNAME=${VPN_HOSTNAME:-$DEFAULT_VPNHOST}
 	VPN_HOSTIP=$(dig -4 +short "$VPN_HOSTNAME")
 	[[ -n "$VPN_HOSTIP" ]] || exception "Connot resolve VPN hostname"
 	if [[ "$INTERFACE_IP" != "$VPN_HOSTIP" ]] ; then # Check hostIP equals to interfaceIP
@@ -210,6 +219,9 @@ if [[ $INSTALL_VPN = true ]]; then
 	info "Start Installation Prerequisite Checking, this might take a long time..."
 	export DEBIAN_FRONTEND=noninteractive # Update apt and set ubuntu to noninteractive mode
 	apt_install "software-properties-common"
+	add-apt-repository -y universe >> $LOG_DIR 2>&1
+	add-apt-repository -y restricted >> $LOG_DIR 2>&1
+	add-apt-repository -y multiverse >> $LOG_DIR 2>&1
 	add-apt-repository -y ppa:certbot/certbot >> $LOG_DIR 2>&1
 	apt -q=2 -o Acquire::ForceIPv4=true update >> $LOG_DIR 2>&1
 	apt -q=2 -y upgrade >> $LOG_DIR 2>&1
@@ -235,12 +247,8 @@ if [[ $INSTALL_VPN = true ]]; then
 		-e 's/^#?LoginGraceTime (120|2m)$/LoginGraceTime 30/' \
 		-e 's/^#?X11Forwarding yes$/X11Forwarding no/' \
 		-e 's/^#?PermitEmptyPasswords yes$/PermitEmptyPasswords no/' \
-		-i.original /etc/ssh/sshd_config
-
-		if [[ $DISABLE_ROOTLOGIN = true ]]; then
-			sed -e 's/^#?PermitRootLogin yes$/PermitRootLogin no/' -i /etc/ssh/sshd_config
-		fi
-		# use root to login will be easier for adding user: so leave it there
+		-i.original /etc/ssh/sshd_config 
+		# use root to login will be easier for adding user: so leave it there -e 's/^#?PermitRootLogin yes$/PermitRootLogin no/' 
 
 		grep -Fq "MaxStartups 1" /etc/ssh/sshd_config || echo "MaxStartups 1" >> /etc/ssh/sshd_config
 		grep -Fq "MaxAuthTries 2" /etc/ssh/sshd_config || echo "MaxAuthTries 2" >> /etc/ssh/sshd_config
@@ -397,7 +405,7 @@ EOF
 		echo "  ike=$STRONGSWAN_IKE" >> /etc/ipsec.conf	
 		echo "  esp=$STRONGSWAN_ESP" >> /etc/ipsec.conf	
 		echo "  dpdaction=clear" >> /etc/ipsec.conf	
-		echo "  dpddelay=180s" >> /etc/ipsec.conf	
+		echo "  dpddelay=900s" >> /etc/ipsec.conf	
 		echo "  rekey=no" >> /etc/ipsec.conf	
 		echo "  left=%any" >> /etc/ipsec.conf	
 		echo "  leftid=@${VPN_HOSTNAME}" >> /etc/ipsec.conf	
@@ -414,7 +422,7 @@ EOF
 	
 		# StrongSwan Settings: ipsec.secrets	
 		echo "${VPN_HOSTNAME} : RSA \"privkey.pem\"" > /etc/ipsec.secrets
-		echo "${ADMIN_EMAIL} %any : EAP \"${ADMIN_EMAIL}\"" >> /etc/ipsec.secrets
+		echo "${ADMIN_EMAIL} : EAP \"${ADMIN_EMAIL}\"" >> /etc/ipsec.secrets
 
 		# Restart StrongSwan. 
 		ipsec restart >> $LOG_DIR 2>&1
@@ -1391,6 +1399,8 @@ EOF
 
 		-a, --adduser, adduser        add new user to all VPNs, require USERNAME and PASSWORD. Can be used to change password
 		-d, --deluser, deluser        delete user from VPNs
+		-l, --listuser, listuser      list all user on this server
+		-r, --restart, restart        restart all VPNs on this server
 
 	EOF_END
 	}
@@ -1426,11 +1436,11 @@ EOF
 		fi
 		# Add to every VPN
 		if [[ \$STRONGSWAN = true ]]; then
-			if [[ -n \$(grep -E "\$1\ %any\ :\ EAP" \$STRONGSWAN_USER_LIST) ]]; then
-				sed -i "s_^\(\$1 %any : EAP \).*_\1\"\$2\"_" \$STRONGSWAN_USER_LIST
+			if [[ -n \$(grep -E "\$1\ :\ EAP" \$STRONGSWAN_USER_LIST) ]]; then
+				sed -i "s_^\(\$1 : EAP \).*_\1\"\$2\"_" \$STRONGSWAN_USER_LIST
 				info "Updated StrongSwan User <\$1> password to <\$2>"
 			else
-				echo "\$1 %any : EAP \\"\$2\\"" >> \$STRONGSWAN_USER_LIST
+				echo "\$1 : EAP \\"\$2\\"" >> \$STRONGSWAN_USER_LIST
 				info "Added StrongSwan User <\$1> password <\$2>"
 			fi
 		fi
@@ -1478,7 +1488,7 @@ EOF
 		fi
 		# delete from every VPN
 		if [[ \$STRONGSWAN = true ]]; then
-			if [[ -n \$(grep -E "\$1\ %any\ :\ EAP" \$STRONGSWAN_USER_LIST) ]]; then
+			if [[ -n \$(grep -E "\$1\ :\ EAP" \$STRONGSWAN_USER_LIST) ]]; then
 				sed -i "/^\$1.*/d" \$STRONGSWAN_USER_LIST
 				sed -i "/^\$/d" \$STRONGSWAN_USER_LIST
 				info "StrongSwan User <\$1> deleted"
